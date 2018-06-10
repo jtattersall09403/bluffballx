@@ -24,11 +24,24 @@ dummy <- TRUE
 # Let's go!
 while(dummy == "TRUE") {
   
-  # If no funds available, wait for 30 minutes
-  if (balance < 10) Sys.sleep(60*30)
+  # If no funds available, wait for 1 hour
+  if (balance < 10) {
+    print("Low balance, sleeping for 1 hour")
+    Sys.sleep(60*60)
+  }
   
   # Refresh session
   keepAlive()
+  
+  # Check if it's a new day
+  date <- readRDS('./03 Bots/admin/date.rds')
+  
+  # If it is, get the days matches
+  if(date < Sys.Date()) {
+    
+    
+    
+  }
   
   # Mark initialisation time
   init.time <- Sys.time()
@@ -103,7 +116,7 @@ while(dummy == "TRUE") {
       filter(status == "LOSER") %>%
       summarise(profit = n()) %>% unlist %>% as.numeric()
     
-    balance <<- balance + wins - losses
+    balance <<- balance + wins
     
     current_bets <- current_bets.2 %>% filter(status == "ACTIVE") %>%
       select(-status)

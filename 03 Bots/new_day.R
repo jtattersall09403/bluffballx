@@ -1,3 +1,5 @@
+# ----- Script to run at the start of a new day to get market id lookup ----
+
 # Oddsportal to betfair lookup #
 
 # -------- Oddsportal -------
@@ -52,7 +54,7 @@ oddsportal.teams <- oddsportal %>%
   mutate(time = paste(date, time)) %>%
   mutate(h.team = trimws(gsub("\\s+", " ", h.team)),
          a.team = trimws(gsub("\\s+", " ", a.team)))
-  
+
 
 # Save
 saveRDS(oddsportal.teams, './01 Data/oddsportal teams 10-06-2018.rds')
@@ -60,12 +62,12 @@ saveRDS(oddsportal.teams, './01 Data/oddsportal teams 10-06-2018.rds')
 # ---------- Betfair ----------
 
 matches <- listMarketCatalogue(eventTypeIds = c("1"),
-                    fromDate = format(as.POSIXct(paste(Sys.Date(), "00:00"),
-                                                  format="%Y-%m-%d %H:%M"), "%Y-%m-%dT%TZ"),
-                    toDate = format(as.POSIXct(paste(Sys.Date(), "23:59"),
-                                                format="%Y-%m-%d %H:%M"), "%Y-%m-%dT%TZ"),
-                    maxResults = "200",
-                    marketTypeCodes = c("MATCH_ODDS"))
+                               fromDate = format(as.POSIXct(paste(Sys.Date(), "00:00"),
+                                                            format="%Y-%m-%d %H:%M"), "%Y-%m-%dT%TZ"),
+                               toDate = format(as.POSIXct(paste(Sys.Date(), "23:59"),
+                                                          format="%Y-%m-%d %H:%M"), "%Y-%m-%dT%TZ"),
+                               maxResults = "200",
+                               marketTypeCodes = c("MATCH_ODDS"))
 
 # Get relevant betfair variables
 matches.2 <- data.frame(cbind(matches[, c("marketId",
@@ -135,8 +137,8 @@ right.result <- right[b,] %>% mutate(index = b,
                                      "match"=matches.out$posterior)
 
 matched.data <- inner_join(left.result,
-                          right.result,
-                          by="index") %>%
+                           right.result,
+                           by="index") %>%
   select(marketId, time.x, h.team.x, a.team.x, h.team.y, a.team.y, match) %>%
   filter(match > 0.1)
 
