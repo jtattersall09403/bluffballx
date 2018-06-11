@@ -55,10 +55,6 @@ oddsportal.teams <- oddsportal %>%
   mutate(h.team = trimws(gsub("\\s+", " ", h.team)),
          a.team = trimws(gsub("\\s+", " ", a.team)))
 
-
-# Save
-saveRDS(oddsportal.teams, './01 Data/oddsportal teams 10-06-2018.rds')
-
 # ---------- Betfair ----------
 
 matches <- listMarketCatalogue(eventTypeIds = c("1"),
@@ -91,25 +87,15 @@ matches.3 <- lapply(matches$runners, function(runner) {
 betfair.teams <- matches.3 %>%
   mutate(time = substr(matches.marketStartTime, 1, 16)) %>%
   mutate(time = gsub("T", " ", time)) %>%
-  select(time, marketId, h.team=team.h, a.team=team.a)
-
-# Save
-saveRDS(betfair.teams, './01 Data/betfair teams 10-06-2018.rds')
+  select(time, marketId, h.team=team.h, a.team=team.a,
+         team.h.id, team.a.id, draw.id, comp.name)
 
 
 # ---- Fastlinking -----
 
-betfair.teams <- readRDS('./01 Data/betfair teams 10-06-2018.rds')
-oddsportal.teams <- readRDS('./01 Data/oddsportal teams 10-06-2018.rds')
-
 # Make into data frames. Need two variables for fastlink to work
 left <- oddsportal.teams
 right <- betfair.teams
-
-# Simple join as benchmark
-result <- left %>% inner_join(right, by = c("h.team", "a.team"))
-
-nrow(result)
 
 # Link to FPL data
 matches.out <- fastLink(
@@ -124,9 +110,6 @@ matches.out <- fastLink(
   return.all = TRUE
 )
 
-# Gives the match rate, estimated false positive rate (FDR) and estimated false negative rate (FNR)
-summary(matches.out)
-
 # Extracts the matched data
 a <- matches.out$matches$inds.a
 b <- matches.out$matches$inds.b
@@ -139,13 +122,18 @@ right.result <- right[b,] %>% mutate(index = b,
 matched.data <- inner_join(left.result,
                            right.result,
                            by="index") %>%
-  select(marketId, time.x, h.team.x, a.team.x, h.team.y, a.team.y, match) %>%
+  select(marketId, comp.name, time.x, h.team.x, a.team.x, h.team.y, a.team.y, match,
+         team.h.id, team.a.id, draw.id) %>%
   filter(match > 0.1)
 
 matched.data.2 <- matched.data %>%
   select(h.team=h.team.x,
          a.team=a.team.x,
-         marketId)
+         marketId,
+         comp.name,
+         team.h.id,
+         team.a.id,
+         draw.id)
 
 saveRDS(matched.data.2, './03 Bots/admin/oddsportal-betfair-lookup.rds')
 
