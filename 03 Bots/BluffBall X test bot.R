@@ -10,24 +10,45 @@ library(rvest)
 library(data.table)
 library(fastLink)
 
+# Get functions
+source('./03 Bots/Functions/risk_manage.R')
+
 # Get login details
 key.file <- readLines('Key')
 
 # Log in
 loginBF(key.file[1],key.file[2],key.file[3])
 
+# Variables not to clear out
+keepvars <- c('keepvars',
+              'balance',
+              'dummy',
+              'key.file',
+              'save.time',
+              'stake',
+              'all.bet',
+              'first.time',
+              'get_optimal')
+
 # ---- Start bot ----
 
 # Dummy variable for while loop
 dummy <- TRUE
 
+# Stake variable. This will need to be updated.
+stake <- 2
+
 # Let's go!
 while(dummy == "TRUE") {
   
   # If no funds available, wait for 1 hour
-  if (balance < 10) {
+  if (balance <= stake) {
     print("Low balance, sleeping for 1 hour")
     Sys.sleep(60*60)
+    
+    # Log back in
+    loginBF(key.file[1],key.file[2],key.file[3])
+    
   }
   
   # Refresh session
@@ -39,7 +60,7 @@ while(dummy == "TRUE") {
   # If it is, get the days matches
   if(date < Sys.Date()) {
     
-    source('./03 Bots/new_day.R')
+    source('./03 Bots/Functions/new_day.R')
     
   }
   
@@ -102,11 +123,14 @@ while(dummy == "TRUE") {
     
     # Record results history
     completed.2 <- current_bets.2 %>%
-      filter(status %in% c("WINNER", "LOSER"))
+      filter(status %in% c("WINNER", "LOSER")) %>%
+      mutate(kickoff = as.character(kickoff),
+             marketId = as.numeric(marketId)) %>%
+      union(completed)
     
     # Need to sort out variable formats here
     if(nrow(completed.2) > nrow(completed)) {
-      completed <- union(completed, completed.2)
+      completed <- completed.2
       fwrite(completed, paste0('./03 Bots/Completed_bets/',
                     gsub(":", "-", as.character(Sys.time())),
                     '_completed.csv'))
@@ -115,16 +139,23 @@ while(dummy == "TRUE") {
     # If any are complete, calculate returns and remove from current bets
     wins <- current_bets.2 %>%
       filter(status == "WINNER") %>%
-      summarise(profit = sum(bf-1)) %>% unlist %>% as.numeric()
+      summarise(profit = sum(stake * bf-1)) %>%
+      unlist %>% 
+      as.numeric()
     
     losses <- current_bets.2 %>%
       filter(status == "LOSER") %>%
-      summarise(profit = n()) %>% unlist %>% as.numeric()
+      summarise(profit = sum(stake)) %>% 
+      unlist %>% 
+      as.numeric()
     
     balance <<- balance + wins
     
     current_bets <- current_bets.2 %>% filter(status == "ACTIVE") %>%
       select(-status)
+    
+    # Save
+    saveRDS(current_bets, './03 Bots/Current_bets/bets.rds')
     
     print(Sys.time())
     print(paste("Current bets checked. Wins:", wins, "Losses:", losses,
@@ -159,7 +190,7 @@ while(dummy == "TRUE") {
   # Scores (for completed and in-play games)
   scores <- html_nodes(web, '.table-score') %>% html_text
   
-  # Odds - some sort of error here!
+  # Odds - some sort of bug occasionally
   odds <- html_nodes(web, '.odds-nowrp') %>% html_text %>%
     matrix(nrow = 3) %>%
     t %>%
@@ -181,7 +212,7 @@ while(dummy == "TRUE") {
   
   # ---- Clean oddsportal data ----
   
-  # Filter to those more than an hour in the future,
+  # Filter to those more than 10 mins in the future,
   # with at least 3 bookies
   oddsportal.2 <- oddsportal %>%
     mutate(date = Sys.Date()) %>%
@@ -213,7 +244,10 @@ while(dummy == "TRUE") {
     as.data.frame %>%
     mutate_all(trimws)
   
-  # Add to data
+  # Get lookup
+  lookup <- readRDS('./03 Bots/admin/oddsportal-betfair-lookup.rds')
+  
+  # Add to data, join to betfair lookup
   oddsportal.3 <- oddsportal.2 %>%
     mutate(h = odds.h$dec,
            d = odds.d$dec,
@@ -221,32 +255,37 @@ while(dummy == "TRUE") {
     mutate(h.team = teams$V1,
            a.team = teams$V2) %>%
     select(game, kickoff, h.team, a.team, h, d, a, bs) %>%
+    inner_join(lookup, by = c("h.team",
+                              "a.team"))
+  
+  # Filter out matches you've already bet on,
+  # and to those less than 5 hours in the future. 
+  # For carrying forward
+  odds.matched.1 <- oddsportal.3 %>%
     filter(kickoff >= Sys.time() + 60*10,
-           bs >= 3)
+           kickoff <= Sys.time() + 60 * 60 * 5,
+           bs >= 3) %>%
+    filter(!marketId %in% current_bets$marketId)
+  
+  # Get games that are more than 5 hours in advance but meet other criteria
+  # (for sleep calculations)
+  oddsportal.4 <- filter(oddsportal.3,
+              kickoff > Sys.time() + 60 * 60 * 5,
+              bs >= 3,
+              !marketId %in% current_bets$marketId)
+  
   
   # ---- Check if any bets remaining today ----
-  if (nrow(oddsportal.3) > 0) {
+  if (nrow(odds.matched.1) > 0) {
     
     # If not, continue
     
-    # ---- Match oddsportal to betfair ----
-    
-    # Get lookup
-    lookup <- readRDS('./03 Bots/admin/oddsportal-betfair-lookup.rds')
-    
-    # Join to oddsportal lookup. Randomly select up to 10 bets.
+    # Randomly select up to 10 bets.
     # This is to minimise the time between scraping and placing the bet,
     # and thus to minimise price movements
-    odds.matched.1 <- oddsportal.3 %>%
-      inner_join(lookup, by = c("h.team",
-                                "a.team"))
     
     odds.matched <- odds.matched.1 %>%
-      #filter(!marketId %in% current_bets$marketId) %>%
       sample_n(size = ifelse(nrow(.) < 10, nrow(.), 10))
-    
-    
-    print("Matched to betfair games")
     
     # ---- Get betfair odds ----
     
@@ -316,6 +355,8 @@ while(dummy == "TRUE") {
       rename(a.b=price,
              a.b.s=size)
     
+    print("Matched to betfair games")
+    
     # ------- Betting strategy -------
     
     # Melt oddsportal odds
@@ -377,28 +418,33 @@ while(dummy == "TRUE") {
     # Merge
     odds.matched.4 <- cbind(op, "bf"=bf$value, "size"=bf.s$value)
     
-    # Get opportunities
+    # Get opportunities. This bit is important!
     opps <- odds.matched.4 %>%
       mutate(dif = bf - value) %>%
-      mutate(xr = (1/value) * bf,
-             xv = (1/value) * (bf - 1) - (1-1/value),
-             xv = 0.95 * xv) %>%
-      filter(xv > 0.08) %>%
-      arrange(desc(dif)) %>%
+      mutate(xr = (1/value - 0.05) * bf,
+             xv = (1/(value - 0.05) * bf - 1), # Applying findings from research
+             xr = 0.95 * xr,
+             xv = 0.95 * xv) %>% # Applying commission
+      filter(xv > 0.05, # Arbitrary. Those with a higher rate of return.
+             value <= 20) %>% # This limits bets according to their probability of winning
+      arrange(desc(xv)) %>%
+      group_by(marketId) %>%
+      filter(row_number(desc(xv)) == 1) %>% # Get highest value bet per game
+      ungroup %>%
       mutate(back.id = case_when(variable == 'a' ~ team.a.id,
                                  variable == 'd' ~ draw.id,
                                  variable == 'h' ~ team.h.id))
     
     # View(opps)
     
-    # Filter to new bets
+    # Function below gets as many bets as you can afford such that
+    # xv is maximised without raising the chance of losing every bet
+    # above a certain threshold
     newopps <- opps %>%
-      filter(!marketId %in% current_bets$marketId |
-               (marketId %in% current_bets$marketId &
-                  !back.id %in% current_bets$back.id)) %>%
       arrange(desc(xv)) %>%
-      mutate(cum.cost = row_number()) %>%
-      filter(cum.cost < balance)
+      mutate(stake = min(stake, size), # Bet the smaller out of size available or your maximum stake
+             cum.cost = row_number() * stake) %>%
+      filter(cum.cost <= balance)
     
     # Add to current bets if you can afford them
     cost <- ifelse(nrow(newopps) > 0, 
@@ -416,6 +462,7 @@ while(dummy == "TRUE") {
     # ------ Results -------
     
     # Save data every 30 minutes
+    save.time <- ifelse(!exists("save.time"), 0, save.time)
     if (Sys.time() - save.time > 1800) {
       save.time <- Sys.time()
       time <- as.character(save.time) %>%
@@ -432,8 +479,12 @@ while(dummy == "TRUE") {
     first.time <- min(as.POSIXct(current_bets$kickoff))
     
     # Check total wins and losses
-    wins.td <- round(sum(completed[completed$status=="WINNER"]$bf - 1), 2)
-    loss.td <- sum(completed$status=="LOSER")
+    wins.td <- round(summarise(filter(completed,
+                                      status == "WINNER"),
+                               profit = sum((bf - 1) * stake)), 2)
+    loss.td <- round(summarise(filter(completed,
+                                      status == "LOSER"),
+                               profit = sum(stake)), 2)
     ret.td <- round(100*(wins.td-loss.td)/nrow(completed), 2)
     
     # Record end time
@@ -479,20 +530,46 @@ while(dummy == "TRUE") {
     tryCatch(fwrite(current_bets, "Current_bets.csv"),
              error = function(e) fwrite(current_bets, "Current_bets_1.csv"))
     
+    # Clear out memory
+    rm(list= ls()[!(ls() %in% keepvars)])
+    gc()
+    
     # Sleep if all bet
     if(all.bet) {
       print(paste("All matched odds have been bet on. Sleeping until",
                   first.time))
       Sys.sleep(60*60*(hour(first.time) - hour(as.POSIXct(Sys.time()))))
+      
+      # Log back in
+      loginBF(key.file[1],key.file[2],key.file[3])
     }
+  } else if(nrow(oddsportal.4) > 0){
+    
+    # Matches available, but in more than 5 hours
+    hour5 <- min(oddsportal.4$kickoff - 60 * 60 * 4)
+    print("More matches to bet on, but none in the next 5 hours.")
+    print(paste("Sleeping until", hour5))
+    Sys.sleep(as.integer(hour5) - as.integer(as.POSIXct(Sys.time())))
+    print("Waking up...")
+    
+    # Log back in
+    loginBF(key.file[1],key.file[2],key.file[3])
+    
   } else {
     
     # No more matches, sleep til tomorrow
-    print("No more matches today. See you tomorrow!")
-    sleep(as.integer(as.POSIXct(paste(Sys.Date(), "23:59"))) - as.integer(as.POSIXct(Sys.time())))
+    rm(list= ls()[!(ls() %in% keepvars)])
+    gc()
+    print("No more new matches today. See you tomorrow!")
+    Sys.sleep(as.integer(as.POSIXct(paste(Sys.Date() + 1, "00:30"))) - as.integer(as.POSIXct(Sys.time())))
+    print("Waking up...")
     
+    # Log back in
+    loginBF(key.file[1],key.file[2],key.file[3])
   }
   
+  # Pause between each iteration, for disk and memory management
+  Sys.sleep(60)
   
 }
 
