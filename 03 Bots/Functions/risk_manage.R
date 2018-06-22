@@ -8,7 +8,7 @@ get_optimal <- function(dat, balance, stake, min, prod) {
   
   # Always pick as many as you can afford (as this minimises ploss)
   # When you can't afford all of them, pick as many as you can, such that ploss < arbitrary min, and xv is maximised
-  n = balance/stake
+  n = as.integer(round(balance/stake, 0))
   combos = combn(nrow(dat), n)
   res = apply(combos, 2, function(i) {
     dat[i, ]
