@@ -2,8 +2,8 @@
 
 #devtools::install_github("dashee87/betScrapeR")
 #devtools::install_github("phillc73/abettor")
-library("betScrapeR")
-library("abettor")
+library(betScrapeR)
+library(abettor)
 library(XML)
 library(dplyr)
 library(rvest)
@@ -43,11 +43,12 @@ dummy <- TRUE
 while(dummy == "TRUE") {
   
   # Get stake and balance
-  stake <- readRDS('./03 Bots/stake.rds')
+  stake <- s3readRDS('misc/stake.rds', bucket = "bluffball-x")
   balance <- abettor::checkBalance()$availableToBetBalance
   
   # Try to run bot. On error, pause for 1 hour.
   tryCatch({
+    
     # If no funds available, wait for 1 hour
     if (balance <= stake) {
       print("Low balance, sleeping for 1 hour")
@@ -61,8 +62,13 @@ while(dummy == "TRUE") {
     # Refresh session
     keepAlive()
     
+    # ---- Load utilities ----
+    
+    # Get lookup
+    lookup <- s3readRDS('misc/oddsportal-betfair-lookup.rds', bucket = "bluffball-x")
+    
     # Check if it's a new day
-    date <- readRDS('./03 Bots/admin/date.rds')
+    date <- s3readRDS('misc/date.rds', bucket = "bluffball-x")
     
     # If it is, get the days matches and daily liability
     if(date < Sys.Date()) {
@@ -70,10 +76,14 @@ while(dummy == "TRUE") {
       # Get balance from Betfair
       start.balance <- abettor::checkBalance()$availableToBetBalance
       
-      # Set liability per bet. Between 2 and 50.
-      stake <- max(start.balance/20, 2)
+      # Set liability per bet. Between 4 and 50.
+      stake <- max(start.balance/20, 4)
       stake <- min(stake, 50)
-      saveRDS(stake, '03 Bots/stake.rds')
+      
+      # Upload to S3
+      s3saveRDS(stake,
+                bucket = "bluffball-x", 
+                object = "misc/stake.rds")
       
       source('./03 Bots/Functions/new_day.R')
       
@@ -81,105 +91,89 @@ while(dummy == "TRUE") {
     
     # Update date variable
     date <- Sys.Date()
-    saveRDS(date, './03 Bots/admin/date.rds')
+    
+    # Save to S3
+    s3saveRDS(date, 
+              bucket = "bluffball-x", 
+              object = "misc/date.rds")
     
     # Mark initialisation time
     init.time <- Sys.time()
     
     # ----- Get current bets ----
-    
-    # Completed bets
-    # comp <- list.files('./03 Bots/Completed_bets')
-    # completed <- fread(paste0('./03 Bots/Completed_bets/',
-    #                             comp[[length(comp)]]))
-    
-    if(file.exists('./03 Bots/Current_bets/bets.rds')) {
       
-      # Read file
-      current_bets <- readRDS('./03 Bots/Current_bets/bets.rds')
-      
-      # Check if any current bets
-      if(nrow(current_bets) > 0) {
-        # Get outcomes
-        statuses <- lapply(1:nrow(current_bets), function(i) {
-          
-          # Get row
-          match <- current_bets[i,]
-          
-          # Get betfair exchange info about that match
-          betfair.info <- abettor::listMarketBook(marketIds=match$marketId, 
-                                                  priceData = "SP_AVAILABLE")
-          
-          # Check if valid
-          if(length(betfair.info)==0) {
-            print("No market data returned. Invalid market ID and/or session token expired?")
-          } else {
-            
-            # Get all prices
-            status <- betfair.info$runners[[1]]$status
-            ids <- betfair.info$runners[[1]]$selectionId
-            
-            # Record progress
-            # print(paste("Status processed", i))
-            
-            # Return value
-            data.frame(marketId=betfair.info$marketId,
-                       id=ids,
-                       status=status)
-            
-          }
-          
-          
-        }) %>% rbindlist %>% unique
+    # Read file
+    current_bets <- s3readRDS('current/current_bets.rds', bucket = "bluffball-x")
+    
+    # Check if any current bets
+    if(nrow(current_bets) > 0) {
+      # Get outcomes
+      statuses <- lapply(1:nrow(current_bets), function(i) {
         
-        # Match to current bets
-        current_bets.2 <- current_bets %>%
-          inner_join(statuses, by = c("marketId",
-                                      "id")) %>%
-          unique
+        # Get row
+        match <- current_bets[i,]
         
-        # Record results history
-        completed <- current_bets.2 %>%
-          filter(status %in% c("WINNER", "LOSER")) %>%
-          mutate(kickoff = as.character(kickoff),
-                 marketId = as.numeric(marketId))
+        # Get betfair exchange info about that match
+        betfair.info <- abettor::listMarketBook(marketIds=match$marketId, 
+                                                priceData = "SP_AVAILABLE")
         
-        # Need to sort out variable formats here
-        if(nrow(completed) > 0) {
+        # Check if valid
+        if(length(betfair.info)==0) {
+          print("No market data returned. Invalid market ID and/or session token expired?")
+        } else {
           
-          # Save completed bets
-          # fwrite(completed, paste0('./03 Bots/Completed_bets/',
-          #                          gsub(":", "-", as.character(Sys.time())),
-          #                          '_completed.csv'))
+          # Get all prices
+          status <- betfair.info$runners[[1]]$status
+          ids <- betfair.info$runners[[1]]$selectionId
           
-          # write to an in-memory raw connection
-          zz <- rawConnection(raw(0), "r+")
-          write.csv(completed, zz)
+          # Record progress
+          # print(paste("Status processed", i))
           
-          # upload the object to S3
-          aws.s3::put_object(file = rawConnectionValue(zz), bucket = "bluffball-x", object = "completed.csv")
-          
-          # close the connection
-          close(zz)
+          # Return value
+          data.frame(marketId=betfair.info$marketId,
+                     id=ids,
+                     status=status)
           
         }
         
-        # Filter current bets to active
-        current_bets <- current_bets.2 %>% filter(status == "ACTIVE") %>%
-          select(-status)
         
-        # Save
-        saveRDS(current_bets, './03 Bots/Current_bets/bets.rds')
+      }) %>% rbindlist %>% unique
+      
+      # Match to current bets
+      current_bets.2 <- current_bets %>%
+        inner_join(statuses, by = c("marketId",
+                                    "id")) %>%
+        unique
+      
+      # Record results history
+      completed <- current_bets.2 %>%
+        filter(status %in% c("WINNER", "LOSER")) %>%
+        mutate(kickoff = as.character(kickoff),
+               marketId = as.numeric(marketId))
+      
+      # Need to sort out variable formats here
+      if(nrow(completed) > 0) {
         
-        print(Sys.time())
-        print(paste("Current bets checked.",
-                    "Balance:", balance))
-      } else {
-        print("No current bets")
+        # Upload to s3
+        file <- paste("completed/", Sys.time(), " completed.rds", sep = "")
+        s3saveRDS(completed, 
+                  bucket = "bluffball-x", 
+                  object = file)
+        
       }
       
+      # Filter current bets to active
+      current_bets <- current_bets.2 %>% filter(status == "ACTIVE") %>%
+        select(-status)
       
+      # Log progress
+      print(Sys.time())
+      print(paste("Current bets checked.",
+                  "Balance:", balance))
+    } else {
+      print("No current bets")
     }
+      
     
     # ---- Scrape from oddsportal ----
     
@@ -262,9 +256,6 @@ while(dummy == "TRUE") {
       do.call(rbind, .) %>%
       as.data.frame %>%
       mutate_all(trimws)
-    
-    # Get lookup
-    lookup <- readRDS('./03 Bots/admin/oddsportal-betfair-lookup.rds')
     
     # Add to data, join to betfair lookup
     oddsportal.3 <- oddsportal.2 %>%
@@ -445,19 +436,23 @@ while(dummy == "TRUE") {
         filter(row_number(desc(xv)) * stake < balance) %>% # Add to current bets if you can afford them
         mutate(bet.time = Sys.time()) %>%
         filter(stake > 2, # Need to be above betfair's minimum
-               xv > 0.03) %>% # targeting at least 3% profit
+               xv > 0.025) %>% # targeting at least 2.5% profit
         arrange(desc(xv)) %>%
         group_by(marketId) %>%
         filter(row_number(desc(xv)) == 1) %>% # Get highest value bet per game
         ungroup
       
-      cost <- sum(newopps$liability)
+      # ---- Place bets ----
+      
+      
       
       # Update current bets
       current_bets <- rbind(current_bets, newopps)
       
       # Save as current bets
-      saveRDS(current_bets, './03 Bots/Current_bets/bets.rds')
+      s3saveRDS(current_bets,
+                bucket = "bluffball-x", 
+                object = "current/current_bets.rds")
       
       # ------ Results -------
       
@@ -468,8 +463,19 @@ while(dummy == "TRUE") {
         time <- as.character(save.time) %>%
           gsub(":", "-", .)
         file <- paste(time, "matched_odds.rds", sep = "_")
-        saveRDS(opps, paste0('./03 Bots/Matched_odds/', file))
-        saveRDS(oddsportal.3, paste0('./03 Bots/Oddsportal/', time, "_odds.rds"))
+        
+        # Save matched bets
+        # upload the object to S3
+        s3saveRDS(opps,
+                  bucket = "bluffball-x",
+                  object = paste0("matched_odds/", file))
+        
+        # Save all oddsportal odds
+        # upload the object to S3
+        s3saveRDS(oddsportal.3, 
+                   bucket = "bluffball-x",
+                   object = paste0("oddsportal/", time, "_odds.rds"))
+        
       }
       
       # Check if you've already bet on all the matched odds
@@ -527,8 +533,8 @@ while(dummy == "TRUE") {
       close(fileConn)
       
       # Log current bets
-      tryCatch(fwrite(current_bets, "Current_bets.csv"),
-               error = function(e) fwrite(current_bets, "Current_bets_1.csv"))
+      s3saveRDS(current_bets, bucket = "bluffball-x", 
+                 object = "current/current_bets.rds")
       
       
       

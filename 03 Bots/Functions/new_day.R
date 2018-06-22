@@ -135,5 +135,8 @@ matched.data.2 <- matched.data %>%
          team.a.id,
          draw.id)
 
-saveRDS(matched.data.2, './03 Bots/admin/oddsportal-betfair-lookup.rds')
+# Upload to S3
+s3saveRDS(matched.data.2, 
+          bucket = "bluffball-x", 
+          object = "misc/oddsportal-betfair-lookup.rds")
 
