@@ -43,7 +43,8 @@ dummy <- TRUE
 while(dummy == "TRUE") {
   
   # Get stake and balance
-  stake <- s3readRDS('misc/stake.rds', bucket = "bluffball-x")
+  #stake <- s3readRDS('misc/stake.rds', bucket = "bluffball-x")
+  stake <- readRDS('./03 Bots/data/stake.rds')
   balance <- abettor::checkBalance()$availableToBetBalance
   
   # Try to run bot. On error, pause for 1 hour.
@@ -62,40 +63,55 @@ while(dummy == "TRUE") {
     # Refresh session
     keepAlive()
     
-    # ---- Load utilities ----
-    
-    # Get lookup
-    lookup <- s3readRDS('misc/oddsportal-betfair-lookup.rds', bucket = "bluffball-x")
-    
+    # ---- Utilities: new day etc ----
     # Check if it's a new day
-    date <- s3readRDS('misc/date.rds', bucket = "bluffball-x")
+    #date <- s3readRDS('misc/date.rds', bucket = "bluffball-x")
+    date <- readRDS('./03 Bots/data/date.rds')
     
-    # If it is, get the days matches and daily liability
+    # If it is, get the day's liability
     if(date < Sys.Date()) {
       
       # Get balance from Betfair
       start.balance <- abettor::checkBalance()$availableToBetBalance
       
-      # Set liability per bet. Between 4 and 50.
+      # Set liability per bet. Between 3 and 50.
       stake <- max(start.balance/20, 4)
       stake <- min(stake, 50)
       
       # Upload to S3
-      s3saveRDS(stake,
-                bucket = "bluffball-x", 
-                object = "misc/stake.rds")
+      # s3saveRDS(stake,
+      #           bucket = "bluffball-x", 
+      #           object = "misc/stake.rds")
+      
+      saveRDS(stake, './03 Bots/data/stake.rds')
+      
+    }
+    
+    # Every 10 minutes, match to oddsportal again. Otherwise it seems to miss some
+    time <- readRDS('./03 Bots/data/match_time.rds')
+    
+    if (time < Sys.time() - 10 * 60) {
       
       source('./03 Bots/Functions/new_day.R')
       
+      time <- Sys.time()
+      
+      saveRDS(time, './03 Bots/data/match_time.rds')
     }
+    
+    # Get lookup
+    #lookup <- s3readRDS('misc/oddsportal-betfair-lookup.rds', bucket = "bluffball-x")
+    lookup <- readRDS('./03 Bots/data/lookup.rds')
     
     # Update date variable
     date <- Sys.Date()
     
     # Save to S3
-    s3saveRDS(date, 
-              bucket = "bluffball-x", 
-              object = "misc/date.rds")
+    # s3saveRDS(date, 
+    #           bucket = "bluffball-x", 
+    #           object = "misc/date.rds")
+    
+    saveRDS(date, './03 Bots/data/date.rds')
     
     # Mark initialisation time
     init.time <- Sys.time()
@@ -103,7 +119,8 @@ while(dummy == "TRUE") {
     # ----- Get current bets ----
       
     # Read file
-    current_bets <- s3readRDS('current/current_bets.rds', bucket = "bluffball-x")
+    #current_bets <- s3readRDS('current/current_bets.rds', bucket = "bluffball-x")
+    current_bets <- readRDS('./03 Bots/data/current_bets.rds')
     
     # Check if any current bets
     if(nrow(current_bets) > 0) {
@@ -155,10 +172,12 @@ while(dummy == "TRUE") {
       if(nrow(completed) > 0) {
         
         # Upload to s3
-        file <- paste("completed/", Sys.time(), " completed.rds", sep = "")
-        s3saveRDS(completed, 
-                  bucket = "bluffball-x", 
-                  object = file)
+        file <- paste("./03 Bots/Completed_bets/", Sys.time(), " completed.rds", sep = "")
+        file <- gsub(":", "-", file)
+        # s3saveRDS(completed, 
+        #           bucket = "bluffball-x", 
+        #           object = file)
+        saveRDS(completed, file)
         
       }
       
@@ -171,6 +190,7 @@ while(dummy == "TRUE") {
       print(paste("Current bets checked.",
                   "Balance:", balance))
     } else {
+      print(Sys.time())
       print("No current bets")
     }
       
@@ -262,8 +282,12 @@ while(dummy == "TRUE") {
       mutate(h = odds.h$dec,
              d = odds.d$dec,
              a = odds.a$dec) %>%
-      mutate(h.team = teams$V1,
-             a.team = teams$V2) %>%
+      mutate(h.team = trimws(teams$V1),
+             a.team = trimws(teams$V2)) %>%
+      mutate(h.team = trimws(gsub("\\s+", " ", h.team)),
+             a.team = trimws(gsub("\\s+", " ", a.team)),
+             h.team = trimws(gsub("\\([^\\]]*\\)", "", h.team, perl=TRUE)),
+             a.team = trimws(gsub("\\([^\\]]*\\)", "", a.team, perl=TRUE))) %>%
       select(game, kickoff, h.team, a.team, h, d, a, bs) %>%
       inner_join(lookup, by = c("h.team",
                                 "a.team")) %>%
@@ -347,7 +371,11 @@ while(dummy == "TRUE") {
           
           # Get lay prices
           lay <- lapply(lay.prices, function(p) {
-            p[1,]
+            if(length(p) > 0) {
+              p[1,]
+            } else {
+              data.frame(price = 0, size = 0)
+            }
           }) %>% do.call(rbind, .) %>% cbind(id) %>%
             mutate(marketId = betfair.info$marketId) %>%
             rename(lay.price = price, lay.size = size)
@@ -399,6 +427,7 @@ while(dummy == "TRUE") {
         mutate(back.lay = ifelse(back.lay == 1, "back", "lay"))
       
       print("Matched to betfair odds")
+      print(paste("Matched", nrow(oddsportal.3), "games out of", nrow(oddsportal.2)))
       
       # ------- Betting strategy -------
       
@@ -407,11 +436,19 @@ while(dummy == "TRUE") {
       
       # Get opportunities. This bit is important!
       opps <- odds.matched.4 %>%
-        mutate(alpha = case_when(home.away == 1 ~ 0.034,  # Intercepts from kaunitz et al
-                                 home.away == 2 ~ 0.037,
-                                 home.away == 3 ~ 0.057),
-               true.p = (1/odds) - alpha,
+        filter(price != 0) %>%
+        mutate(alpha = case_when(home.away == 1 & back.lay == "back" ~ 0.05,  # Intercepts from kaunitz et al
+                                 home.away == 2 & back.lay == "back" ~ 0.05,
+                                 home.away == 3 & back.lay == "back" ~ 0.05,
+                                 home.away == 1 & back.lay == "lay" ~ 0.025,  # Intercepts from analysis of kaunitz et al data
+                                 home.away == 2 & back.lay == "lay" ~ 0.025,
+                                 home.away == 3 & back.lay == "lay" ~ 0.04),
+               slope = case_when(home.away == 1 ~ 1.003,  # Slopes from kaunitz et al
+                                 home.away == 2 ~ 1.012,
+                                 home.away == 3 ~ 1.081),
+               true.p = round(slope * (1/odds) - alpha, 2), # Probabilities are accurate when rounded to nearest 1%, historically
                true.p.not = 1 - true.p) %>%
+        select(-slope) %>%
         filter(true.p > 0) %>% # Remove any very long shots
         mutate(liability = stake,
                stake = ifelse(back.lay == "back",
@@ -419,13 +456,15 @@ while(dummy == "TRUE") {
                               liability/(price - 1)),
                stake = ifelse(size < stake, size, stake), # Only bet up to what's available
                xv = ifelse(back.lay == "back",
-                           (0.95 * true.p * (price - 1)) - (true.p.not),
-                           ((0.95 * stake * true.p.not) - (true.p * liability))/liability)
+                           (0.95 * true.p * (price - 1) * stake) - (true.p.not * stake),
+                           (0.95 * stake * true.p.not) - (true.p * liability))
         )
       
-      # # Current probability of losing every bet
-      # prod <- prod(1-(1/(current_bets$value) - 0.05))
-      # prod <- ifelse(prod == 0, 1, prod)
+      # Save opportunities
+      fwrite(opps, './03 Bots/data/opps.csv')
+      
+      # Get current bets from betfair
+      current_ids <- listCurrentOrders()$marketId
       
       # Function below gets as many bets as you can afford such that
       # xv is maximised without raising the chance of losing every bet
@@ -433,26 +472,58 @@ while(dummy == "TRUE") {
       # Currently not active: selects as many as possible, in order of xv
       # Might need to edit this in future to deal with case when stake is greater than size available
       newopps <- opps %>%
-        filter(row_number(desc(xv)) * stake < balance) %>% # Add to current bets if you can afford them
+        filter(!marketId %in% current_ids) %>% # Double check now duplicates
         mutate(bet.time = Sys.time()) %>%
-        filter(stake > 2, # Need to be above betfair's minimum
-               xv > 0.025) %>% # targeting at least 2.5% profit
+        filter(stake >= 2, # Need to be above betfair's minimum
+               xv > 0.01) %>% # positive expected value
         arrange(desc(xv)) %>%
         group_by(marketId) %>%
         filter(row_number(desc(xv)) == 1) %>% # Get highest value bet per game
-        ungroup
+        ungroup %>%
+        filter(row_number(desc(xv)) * liability < unlist(balance)) # Add to current bets if you can afford them
       
       # ---- Place bets ----
       
+      if(nrow(newopps) > 0) {
+        
+        for (i in 1:nrow(newopps)) {
+          
+          # Get details
+          size = as.character(round(newopps[i, 'stake'], 2))
+          marketId = as.character(newopps[i, 'marketId'])
+          selectionId = as.character(newopps[i, 'id'])
+          betSide = toupper(as.character(newopps[i, 'back.lay']))
+          price = as.character(newopps[i, 'price'])
+          
+          # Place bet!
+          PlaceBetReturn <- placeOrders(marketId = marketId,
+                                        selectionId = selectionId,
+                                        betSide = betSide,
+                                        betType = "LIMIT",
+                                        betSize = size,
+                                        reqPrice = price,
+                                        persistenceType = "LAPSE"
+          )
+          
+          print('Bet placed!')
+          
+        }
+        
+      }
+      
+      # Record end time
+      end.time <- Sys.time()
       
       
       # Update current bets
       current_bets <- rbind(current_bets, newopps)
       
       # Save as current bets
-      s3saveRDS(current_bets,
-                bucket = "bluffball-x", 
-                object = "current/current_bets.rds")
+      # s3saveRDS(current_bets,
+      #           bucket = "bluffball-x", 
+      #           object = "current/current_bets.rds")
+      
+      saveRDS(current_bets, './03 Bots/data/current_bets.rds')
       
       # ------ Results -------
       
@@ -466,15 +537,15 @@ while(dummy == "TRUE") {
         
         # Save matched bets
         # upload the object to S3
-        s3saveRDS(opps,
-                  bucket = "bluffball-x",
-                  object = paste0("matched_odds/", file))
+        # s3saveRDS(opps,
+        #           bucket = "bluffball-x",
+        #           object = paste0("matched_odds/", file))
         
         # Save all oddsportal odds
         # upload the object to S3
-        s3saveRDS(oddsportal.3, 
-                   bucket = "bluffball-x",
-                   object = paste0("oddsportal/", time, "_odds.rds"))
+        # s3saveRDS(oddsportal.3, 
+        #            bucket = "bluffball-x",
+        #            object = paste0("oddsportal/", time, "_odds.rds"))
         
       }
       
@@ -484,26 +555,16 @@ while(dummy == "TRUE") {
       # Get kickoff time of first game you've bet on
       first.time <- min(as.POSIXct(current_bets$kickoff))
       
-      # Check total wins and losses
-      # wins.td <- round(summarise(filter(completed,
-      #                                   status == "WINNER"),
-      #                            profit = sum((bf - 1) * stake)), 2)
-      # loss.td <- round(summarise(filter(completed,
-      #                                   status == "LOSER"),
-      #                            profit = sum(stake)), 2)
-      # ret.td <- round(100*(wins.td-loss.td)/nrow(completed), 2)
-      
-      # Record end time
-      end.time <- Sys.time()
+      # Check balance
+      balance <- checkBalance()[1]
       print(paste("Balance:", balance))
       #print(paste("Winnings to date:", wins.td))
       #print(paste("Losses to date:", loss.td))
       #print(paste0("Returns to date: ", ret.td, "%"))
       print(paste("New bets:", nrow(newopps)))
       print(paste("Current bets:", nrow(current_bets)))
-      print(paste0("Expected profit from current bets: ", 
-                   round(100*sum(current_bets$xv)/nrow(current_bets), 1),
-                   "%"))
+      print(paste0("Expected profit from current bets: £", 
+                   round(sum(current_bets$xv), 2)))
       print(paste("Initiation to result time:", 
                   round(end.time - init.time, 1),
                   "seconds"))
@@ -532,12 +593,6 @@ while(dummy == "TRUE") {
                    ("---------------------------------------")), fileConn)
       close(fileConn)
       
-      # Log current bets
-      s3saveRDS(current_bets, bucket = "bluffball-x", 
-                 object = "current/current_bets.rds")
-      
-      
-      
       # Sleep if all bet
       if(all.bet) {
         print(paste("All matched odds have been bet on. Sleeping until",
@@ -547,7 +602,8 @@ while(dummy == "TRUE") {
         rm(list= ls()[!(ls() %in% keepvars)])
         gc()
         
-        Sys.sleep(60*60*(hour(first.time) - hour(as.POSIXct(Sys.time()))))
+        # Sys.sleep(60*60*(hour(first.time) - hour(as.POSIXct(Sys.time()))))
+        Sys.sleep(60*10)
         
         # Log back in
         loginBF(key.file[1],key.file[2],key.file[3])
@@ -556,8 +612,8 @@ while(dummy == "TRUE") {
       
       # Matches available, but in more than 5 hours
       
-      # Get time 4 hours before next match
-      hour5 <- min(oddsportal.4$kickoff - 60 * 60 * 4)
+      # Get time 5 hours before next match
+      hour5 <- min(oddsportal.4$kickoff) - 60 * 60 * 4.9
       
       # Clear memory
       rm(list= ls()[!(ls() %in% keepvars)])
@@ -567,6 +623,7 @@ while(dummy == "TRUE") {
       print("More matches to bet on, but none in the next 5 hours.")
       print(paste("Sleeping until", hour5))
       Sys.sleep(as.integer(hour5) - as.integer(as.POSIXct(Sys.time())))
+      #Sys.sleep(60*10)
       print("Waking up...")
       
       # Log back in
@@ -578,7 +635,8 @@ while(dummy == "TRUE") {
       rm(list= ls()[!(ls() %in% keepvars)])
       gc()
       print("No more new matches today. See you tomorrow!")
-      Sys.sleep(as.integer(as.POSIXct(paste(Sys.Date() + 1, "00:30"))) - as.integer(as.POSIXct(Sys.time())))
+      # Sys.sleep(as.integer(as.POSIXct(paste(Sys.Date() + 1, "00:10"), tz = "")) - as.integer(as.POSIXct(Sys.time())))
+      Sys.sleep(60*30)
       print("Waking up...")
       
       # Log back in
@@ -591,26 +649,36 @@ while(dummy == "TRUE") {
     
     # Code error. Log and wait
     fileConn <- file("BluffBall X error Log.txt")
-    text <- readLines(fileConn)
-    writeLines(c(text,
-                 paste("Error at", Sys.time()),
-                 paste(e),
-                 "Sleeping for 1 hour"), 
+    writeLines(c(paste("Error at", Sys.time()),
+                 paste(e)), 
                fileConn)
     close(fileConn)
     
     # Clear memory
+    print("Code encountered an error somewhere. Sleeping for 10 mins.")
+    Sys.sleep(60*10)
+    
     rm(list= ls()[!(ls() %in% keepvars)])
     gc()
-    print("No more new matches today. See you tomorrow!")
-    Sys.sleep(60*60)
+    
     print("Waking up...")
     
     # Log back in
     loginBF(key.file[1],key.file[2],key.file[3])
     
+  }, finally = {
+    
+    # Log back in
+    loginBF(key.file[1],key.file[2],key.file[3])
+    
+    # Clear memory
+    rm(list= ls()[!(ls() %in% keepvars)])
+    gc()
+    
   })
   
 }
+
+# ---- End ----
 
 

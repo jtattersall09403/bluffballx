@@ -53,7 +53,11 @@ oddsportal.teams <- oddsportal %>%
   mutate(date = Sys.Date()) %>%
   mutate(time = paste(date, time)) %>%
   mutate(h.team = trimws(gsub("\\s+", " ", h.team)),
-         a.team = trimws(gsub("\\s+", " ", a.team)))
+         a.team = trimws(gsub("\\s+", " ", a.team)),
+         h.team = trimws(gsub("\\([^\\]]*\\)", "", h.team, perl=TRUE)),
+         a.team = trimws(gsub("\\([^\\]]*\\)", "", a.team, perl=TRUE)))
+
+
 
 # ---------- Betfair ----------
 
@@ -136,7 +140,9 @@ matched.data.2 <- matched.data %>%
          draw.id)
 
 # Upload to S3
-s3saveRDS(matched.data.2, 
-          bucket = "bluffball-x", 
-          object = "misc/oddsportal-betfair-lookup.rds")
+# s3saveRDS(matched.data.2, 
+#           bucket = "bluffball-x", 
+#           object = "misc/oddsportal-betfair-lookup.rds")
+
+saveRDS(matched.data.2, './03 bots/data/lookup.rds')
 
