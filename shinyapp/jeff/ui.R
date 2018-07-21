@@ -18,7 +18,7 @@ shinyUI(dashboardPage(
     
     # Title
     h1("Unbelievable Jeff!"),
-    em(h3("BLuffBallX returns to date")),
+    em(h3("BluffBallX returns to date")),
     
     # Per bet
     fluidRow(
