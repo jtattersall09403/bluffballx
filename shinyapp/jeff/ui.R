@@ -16,6 +16,10 @@ shinyUI(dashboardPage(
   dashboardSidebar(),
   dashboardBody(
     
+    # Title
+    h1("Unbelievable Jeff!"),
+    em(h3("BLuffBallX returns to date")),
+    
     # Per bet
     fluidRow(
       box(title = "Full results to date",

@@ -6,8 +6,6 @@ library(ggplot2)
 
 # ---- Data ----
 
-#setwd('./R/bluffballx/')
-
 # Get login details
 key.file <- readLines('Key')
 

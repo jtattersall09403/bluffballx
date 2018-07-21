@@ -23,6 +23,8 @@ st <- list()
 st[[1]] <-   abettor::getAccountStatement(fromRecordValue = 0) %>%
   select(refId, itemDate, balance, amount)
 
+warning(st[[1]])
+
 # Define server logic required to draw a histogram
 shinyServer(function(input, output) {
   
