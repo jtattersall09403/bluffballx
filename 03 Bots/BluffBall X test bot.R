@@ -1,5 +1,3 @@
-# Test bot - paper trading #
-
 #devtools::install_github("dashee87/betScrapeR")
 #devtools::install_github("phillc73/abettor")
 library(betScrapeR)
@@ -10,11 +8,6 @@ library(rvest)
 library(data.table)
 library(fastLink)
 library(aws.s3)
-
-# Set up your keys and your region here.
-Sys.setenv("AWS_ACCESS_KEY_ID" = "AKIAJZMWCIS25K3PAIJQ",
-           "AWS_SECRET_ACCESS_KEY" = "1oxq+8ug+dn9zMibwQwZlOadgqzRG4XJxJjjCMQO",
-           "AWS_DEFAULT_REGION" = "us-east-2")
 
 # Get login details
 key.file <- readLines('Key')
@@ -42,13 +35,15 @@ dummy <- TRUE
 # Let's go!
 while(dummy == "TRUE") {
   
-  # Get stake and balance
-  #stake <- s3readRDS('misc/stake.rds', bucket = "bluffball-x")
-  stake <- readRDS('./03 Bots/data/stake.rds')
-  balance <- abettor::checkBalance()$availableToBetBalance
-  
   # Try to run bot. On error, pause for 1 hour.
   tryCatch({
+    
+    # Log in
+    loginBF(key.file[1],key.file[2],key.file[3])
+    
+    # Get stake and balance
+    stake <- readRDS('./03 Bots/data/stake.rds')
+    balance <- abettor::checkBalance()$availableToBetBalance
     
     # If no funds available, wait for 1 hour
     if (balance <= stake) {
@@ -59,9 +54,6 @@ while(dummy == "TRUE") {
       loginBF(key.file[1],key.file[2],key.file[3])
       
     }
-    
-    # Refresh session
-    keepAlive()
     
     # ---- Utilities: new day etc ----
     # Check if it's a new day
@@ -122,6 +114,7 @@ while(dummy == "TRUE") {
     #current_bets <- s3readRDS('current/current_bets.rds', bucket = "bluffball-x")
     current_bets <- readRDS('./03 Bots/data/current_bets.rds')
     
+    # ---- Add trycatch here ----
     # Check if any current bets
     if(nrow(current_bets) > 0) {
       # Get outcomes
@@ -187,8 +180,7 @@ while(dummy == "TRUE") {
       
       # Log progress
       print(Sys.time())
-      print(paste("Current bets checked.",
-                  "Balance:", balance))
+      print("Current bets checked.")
     } else {
       print(Sys.time())
       print("No current bets")
@@ -223,7 +215,7 @@ while(dummy == "TRUE") {
     # Scores (for completed and in-play games)
     scores <- html_nodes(web, '.table-score') %>% html_text
     
-    # Odds - some sort of bug occasionally
+    # Odds
     odds <- html_nodes(web, '.odds-nowrp') %>% html_text %>%
       matrix(nrow = 3) %>%
       t %>%
@@ -291,24 +283,23 @@ while(dummy == "TRUE") {
       select(game, kickoff, h.team, a.team, h, d, a, bs) %>%
       inner_join(lookup, by = c("h.team",
                                 "a.team")) %>%
-      mutate(kickoff = kickoff + 60*60) # Correct for BST
+      mutate(kickoff = kickoff + 60*60) %>% # Correct for BST
+      unique
     
-    # Filter out matches you've already bet on,
-    # and to those less than 5 hours in the future. 
+    # Filter to those less than 5 hours in the future. 
     # For carrying forward.
     odds.matched.1 <- oddsportal.3 %>%
       filter(kickoff >= Sys.time() + 60,
              kickoff <= Sys.time() + 60 * 60 * 5,
-             bs >= 3) %>%
-      filter(!marketId %in% current_bets$marketId)
+             bs >= 3)
     
     # Get games that are more than 5 hours in advance but meet other criteria
     # (for sleep calculations)
     oddsportal.4 <- filter(oddsportal.3,
                            kickoff > Sys.time() + 60 * 60 * 5,
-                           bs >= 3,
-                           !marketId %in% current_bets$marketId)
+                           bs >= 3)
     
+    print("Matched to betfair lookup")
     
     # ---- Check if any bets remaining today ----
     if (nrow(odds.matched.1) > 0) {
@@ -336,8 +327,10 @@ while(dummy == "TRUE") {
                                   virtualise = TRUE)
         }, error = function(e) {
           
+          print("Error line 332")
+          
           # Log in
-          loginBF("jacktattersall92@gmail.com","Jack1992","aBiNJgPrYSh3u5Iw")
+          loginBF(key.file[1],key.file[2],key.file[3])
           
           return(
             abettor::listMarketBook(marketIds=match$marketId, 
@@ -349,9 +342,6 @@ while(dummy == "TRUE") {
         # Check if valid
         if(length(betfair.info)==0) {
           print("No market data returned. Invalid market ID and/or session token expired?")
-          
-        } else if(betfair.info$status=="CLOSED"){
-          print("That market is closed")
         } else {
           
           # Get all prices
@@ -439,14 +429,14 @@ while(dummy == "TRUE") {
         filter(price != 0) %>%
         mutate(alpha = case_when(home.away == 1 & back.lay == "back" ~ 0.05,  # Intercepts from kaunitz et al
                                  home.away == 2 & back.lay == "back" ~ 0.05,
-                                 home.away == 3 & back.lay == "back" ~ 0.05,
-                                 home.away == 1 & back.lay == "lay" ~ 0.025,  # Intercepts from analysis of kaunitz et al data
-                                 home.away == 2 & back.lay == "lay" ~ 0.025,
-                                 home.away == 3 & back.lay == "lay" ~ 0.04),
+                                 home.away == 3 & back.lay == "back" ~ 0.065,
+                                 home.away == 1 & back.lay == "lay" ~ 0.04,  # Intercepts from analysis of kaunitz et al data
+                                 home.away == 2 & back.lay == "lay" ~ 0.04,
+                                 home.away == 3 & back.lay == "lay" ~ 0.03),
                slope = case_when(home.away == 1 ~ 1.003,  # Slopes from kaunitz et al
                                  home.away == 2 ~ 1.012,
                                  home.away == 3 ~ 1.081),
-               true.p = round(slope * (1/odds) - alpha, 2), # Probabilities are accurate when rounded to nearest 1%, historically
+               true.p = slope * (1/odds) - alpha,
                true.p.not = 1 - true.p) %>%
         select(-slope) %>%
         filter(true.p > 0) %>% # Remove any very long shots
@@ -464,23 +454,20 @@ while(dummy == "TRUE") {
       fwrite(opps, './03 Bots/data/opps.csv')
       
       # Get current bets from betfair
-      current_ids <- listCurrentOrders()$marketId
+      orders <- listCurrentOrders()
+      current_ids <- paste(orders$marketId, orders$selectionId, sep = "-")
       
-      # Function below gets as many bets as you can afford such that
-      # xv is maximised without raising the chance of losing every bet
-      # above a certain threshold.
-      # Currently not active: selects as many as possible, in order of xv
-      # Might need to edit this in future to deal with case when stake is greater than size available
+      # Select bets you can afford
       newopps <- opps %>%
-        filter(!marketId %in% current_ids) %>% # Double check now duplicates
+        filter(!paste(marketId, id, sep = "-") %in% current_ids) %>% # Remove any bets you've already placed
         mutate(bet.time = Sys.time()) %>%
         filter(stake >= 2, # Need to be above betfair's minimum
-               xv > 0.01) %>% # positive expected value
-        arrange(desc(xv)) %>%
-        group_by(marketId) %>%
-        filter(row_number(desc(xv)) == 1) %>% # Get highest value bet per game
-        ungroup %>%
+               xv/liability > 0.006) %>% # positive proportional expected value - from parameter tuning
+        arrange(desc(xv)) %>% # Don't limit yourself to one bet per game
         filter(row_number(desc(xv)) * liability < unlist(balance)) # Add to current bets if you can afford them
+      
+      # Progress
+      print("Selected opportunities")
       
       # ---- Place bets ----
       
@@ -549,18 +536,12 @@ while(dummy == "TRUE") {
         
       }
       
-      # Check if you've already bet on all the matched odds
-      all.bet <- all(odds.matched.1$marketId %in% current_bets$marketId)
-      
-      # Get kickoff time of first game you've bet on
-      first.time <- min(as.POSIXct(current_bets$kickoff))
-      
+
       # Check balance
-      balance <- checkBalance()[1]
+      staked <- round(sum(current_bets$liability), 2)
+      balance <- checkBalance()[1] + staked
       print(paste("Balance:", balance))
-      #print(paste("Winnings to date:", wins.td))
-      #print(paste("Losses to date:", loss.td))
-      #print(paste0("Returns to date: ", ret.td, "%"))
+      print(paste("Liability:", staked))
       print(paste("New bets:", nrow(newopps)))
       print(paste("Current bets:", nrow(current_bets)))
       print(paste0("Expected profit from current bets: £", 
@@ -574,40 +555,7 @@ while(dummy == "TRUE") {
       print("---------------------------------------")
       print("---------------------------------------")
       
-      # Log progress
-      fileConn <- file("BluffBall X Log.txt")
-      writeLines(c(paste(Sys.time()),
-                   (paste("Balance:", balance)),
-                   (paste("New bets:", nrow(newopps))),
-                   (paste("Current bets:", nrow(current_bets))),
-                   (paste0("Expected profit from current bets: ", 
-                           round(100*sum(current_bets$xv)/nrow(current_bets), 1),
-                           "%")),
-                   (paste("Initiation to result time:", 
-                          round(end.time - init.time, 1),
-                          "seconds")),
-                   (paste("Scrape to result time:", 
-                          round(end.time - start.time, 1),
-                          "seconds")),
-                   ("---------------------------------------"),
-                   ("---------------------------------------")), fileConn)
-      close(fileConn)
       
-      # Sleep if all bet
-      if(all.bet) {
-        print(paste("All matched odds have been bet on. Sleeping until",
-                    first.time))
-        
-        # Clear out memory
-        rm(list= ls()[!(ls() %in% keepvars)])
-        gc()
-        
-        # Sys.sleep(60*60*(hour(first.time) - hour(as.POSIXct(Sys.time()))))
-        Sys.sleep(60*10)
-        
-        # Log back in
-        loginBF(key.file[1],key.file[2],key.file[3])
-      }
     } else if(nrow(oddsportal.4) > 0){
       
       # Matches available, but in more than 5 hours
@@ -622,12 +570,9 @@ while(dummy == "TRUE") {
       # Sleep
       print("More matches to bet on, but none in the next 5 hours.")
       print(paste("Sleeping until", hour5))
-      Sys.sleep(as.integer(hour5) - as.integer(as.POSIXct(Sys.time())))
-      #Sys.sleep(60*10)
+      #Sys.sleep(as.integer(hour5) - as.integer(as.POSIXct(Sys.time())))
+      Sys.sleep(60*60)
       print("Waking up...")
-      
-      # Log back in
-      loginBF(key.file[1],key.file[2],key.file[3])
       
     } else {
       
@@ -638,13 +583,12 @@ while(dummy == "TRUE") {
       # Sys.sleep(as.integer(as.POSIXct(paste(Sys.Date() + 1, "00:10"), tz = "")) - as.integer(as.POSIXct(Sys.time())))
       Sys.sleep(60*30)
       print("Waking up...")
-      
-      # Log back in
-      loginBF(key.file[1],key.file[2],key.file[3])
+
     }
     
     # Pause between each iteration, for disk and memory management
     Sys.sleep(60)
+    
   }, error = function(e) {
     
     # Code error. Log and wait
@@ -663,13 +607,7 @@ while(dummy == "TRUE") {
     
     print("Waking up...")
     
-    # Log back in
-    loginBF(key.file[1],key.file[2],key.file[3])
-    
   }, finally = {
-    
-    # Log back in
-    loginBF(key.file[1],key.file[2],key.file[3])
     
     # Clear memory
     rm(list= ls()[!(ls() %in% keepvars)])

@@ -1,9 +1,9 @@
-2018-06-27 18:03:34
-Balance: 34.65
+2018-07-21 09:16:03
+Balance: 121.86
 New bets: 0
-Current bets: 6
-Expected profit from current bets: 11.4%
-Initiation to result time: 11.4 seconds
-Scrape to result time: 10.1 seconds
+Current bets: 0
+Expected profit from current bets: NaN%
+Initiation to result time: 15.1 seconds
+Scrape to result time: 15.1 seconds
 ---------------------------------------
 ---------------------------------------

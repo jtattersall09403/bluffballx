@@ -287,7 +287,7 @@ back <- data.1 %>% mutate(back.lay = "back") %>%
 bets.data <- rbind(back, lay)
 
 # Set liability
-stake = 5
+stake = 4
 
 bets.data.2 <- bets.data %>%
   #filter(year(date) > 2014) %>%
@@ -307,8 +307,13 @@ bets.data.2 <- bets.data %>%
 # Check profit of strategy
 bets.data.3 <- bets.data.2 %>%
   ungroup %>%
-  filter(xv > 0,
+  filter(xv*stake > 0.01, # minimum of 1p expected value
          stake > 2)
+
+# What is the average expected value?
+mean(bets.data.3$xv)
+summary(bets.data.3$xv)
+hist(bets.data.3$xv[bets.data.3$xv < 0.05])
 
 bets.result <- bets.data.3 %>%
   ungroup %>%
